@@ -7,6 +7,7 @@ const winston = require('winston');
 const authRoutes = require('./routes/auth');
 const patientRoutes = require('./routes/patient');
 const doctorRoutes = require('./routes/doctor');
+const adminRoutes = require('./routes/admin');
 const emergencyRoutes = require('./routes/emergency');
 const commsRoutes = require('./routes/comms');
 const vitalsRoutes = require('./routes/vitals');
@@ -41,7 +42,7 @@ const app = express();
 
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*', // Fallback to allow all origins if FRONTEND_URL is not set
+  origin: process.env.FRONTEND_URL || '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
@@ -67,6 +68,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/patient', patientRoutes);
 app.use('/api/doctor', doctorRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api/emergency', emergencyRoutes);
 app.use('/api/comms', commsRoutes);
 app.use('/api/vitals', vitalsRoutes);
