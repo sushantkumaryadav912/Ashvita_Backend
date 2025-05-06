@@ -10,7 +10,7 @@ const doctorRoutes = require('./routes/doctor');
 const emergencyRoutes = require('./routes/emergency');
 const commsRoutes = require('./routes/comms');
 const vitalsRoutes = require('./routes/vitals');
-const alertsRoutes = require('./routes/alerts');
+const alertsRoutes = require('./routes/alert');
 const healthStatusRoutes = require('./routes/health-status');
 
 const requiredEnvVars = [
