@@ -1,9 +1,9 @@
-// routes/vitals.js
+// routes/alerts.js
 const express = require('express');
-const { getVitals } = require('../controllers/vitals');
+const { getAlerts } = require('../controllers/alerts');
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
-router.get('/', authenticate, getVitals);
+router.get('/', authenticate, getAlerts);
 
 module.exports = router;

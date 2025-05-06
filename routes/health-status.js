@@ -1,9 +1,9 @@
-// routes/vitals.js
+// routes/health-status.js
 const express = require('express');
-const { getVitals } = require('../controllers/vitals');
+const { getHealthStatus } = require('../controllers/health-status');
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
-router.get('/', authenticate, getVitals);
+router.get('/', authenticate, getHealthStatus);
 
 module.exports = router;
