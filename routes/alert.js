@@ -1,9 +1,12 @@
-// routes/alerts.js
 const express = require('express');
-const { getAlerts } = require('../controllers/alerts');
-const { authenticate } = require('../middleware/auth');
-
 const router = express.Router();
-router.get('/', authenticate, getAlerts);
+const authenticateToken = require('../middleware/auth');
+const alertController = require('../controllers/alert');
+
+// GET /api/alerts - Fetch alerts for the authenticated user
+router.get('/', authenticateToken, alertController.getAlerts);
+
+// POST /api/alerts - Create a new alert
+router.post('/', authenticateToken, alertController.createAlert);
 
 module.exports = router;

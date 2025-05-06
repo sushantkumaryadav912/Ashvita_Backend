@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const authenticate = require('../middleware/auth');
-const { getVitals } = require('../controllers/vitals');
+const authenticateToken = require('../middleware/auth');
+const vitalsController = require('../controllers/vitals');
 
-router.get('/', authenticate, getVitals);
+// GET /api/vitals - Get vital signs for a patient
+router.get('/', authenticateToken, vitalsController.getVitals);
 
 module.exports = router;
-

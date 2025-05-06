@@ -1,10 +1,9 @@
-// routes/health-status.js
 const express = require('express');
-const { getHealthStatus } = require('../controllers/health-status');
-const { authenticate } = require('../middleware/auth');
-
 const router = express.Router();
-router.get('/', authenticate, getHealthStatus);
+const authenticateToken = require('../middleware/auth');
+const healthStatusController = require('../controllers/health-status');
+
+// GET /api/health-status - Get the health status of a patient
+router.get('/', authenticateToken, healthStatusController.getHealthStatus);
 
 module.exports = router;
-
