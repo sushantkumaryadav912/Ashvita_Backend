@@ -1,0 +1,33 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sushantkumaryadav912/Ashvita_Backend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sushantkumaryadav912/Ashvita_Backend/issues"
+  },
+  "homepage": "https://github.com/sushantkumaryadav912/Ashvita_Backend#readme",
+  "dependencies": {
+    "@azure/communication-identity": "^1.3.1",
+    "@supabase/supabase-js": "^2.49.4",
+    "axios": "^1.9.0",
+    "azure-iot-device": "^1.18.3",
+    "azure-iot-device-mqtt": "^1.16.3",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.15.6"
+  }
+}
