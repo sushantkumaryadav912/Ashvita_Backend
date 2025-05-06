@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "keywords": [],
   "author": "",
@@ -13,8 +14,7 @@
   "type": "commonjs",
   "repository": {
     "type": "git",
-    "url": 
-    "git+https://github.com/sushantkumaryadav912/Ashvita_Backend.git"
+    "url": "git+https://github.com/sushantkumaryadav912/Ashvita_Backend.git"
   },
   "bugs": {
     "url": "https://github.com/sushantkumaryadav912/Ashvita_Backend/issues"
@@ -26,9 +26,17 @@
     "axios": "^1.9.0",
     "azure-iot-device": "^1.18.3",
     "azure-iot-device-mqtt": "^1.16.3",
+    "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.15.6"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
   }
 }
