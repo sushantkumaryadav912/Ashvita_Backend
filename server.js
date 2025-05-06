@@ -1,16 +1,29 @@
+// server.js
 const express = require('express');
-const { Client } = require('azure-iot-device'); // Test azure-iot-device
-const { Mqtt } = require('azure-iot-device-mqtt');
-const dotenv = require('dotenv');
+const cors = require('cors');
+const authRoutes = require('./routes/auth');
+const vitalsRoutes = require('./routes/vitals');
+const alertsRoutes = require('./routes/alerts');
+const healthStatusRoutes = require('./routes/health-status');
+const patientRoutes = require('./routes/patient');
+const doctorRoutes = require('./routes/doctor');
+const emergencyRoutes = require('./routes/emergency');
+const commsRoutes = require('./routes/comms');
 
-dotenv.config();
 const app = express();
-
+app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => {
-  res.json({ message: 'Ashvita Backend is running!' });
-});
+app.use('/api/auth', authRoutes);
+app.use('/api/vitals', vitalsRoutes);
+app.use('/api/alerts', alertsRoutes);
+app.use('/api/health-status', healthStatusRoutes);
+app.use('/api/patient', patientRoutes);
+app.use('/api/doctor', doctorRoutes);
+app.use('/api/emergency', emergencyRoutes);
+app.use('/api/comms', commsRoutes);
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
