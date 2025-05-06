@@ -10,7 +10,7 @@ const doctorRoutes = require('./routes/doctor');
 const emergencyRoutes = require('./routes/emergency');
 const commsRoutes = require('./routes/comms');
 const vitalsRoutes = require('./routes/vitals');
-const alertsRoutes = require('./routes/alert');
+const alertsRoutes = require('./routes/alerts');
 const healthStatusRoutes = require('./routes/health-status');
 
 const requiredEnvVars = [
@@ -18,7 +18,6 @@ const requiredEnvVars = [
   'SUPABASE_URL',
   'SUPABASE_KEY',
   'JWT_SECRET',
-  'FRONTEND_URL',
 ];
 const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
 if (missingEnvVars.length > 0) {
@@ -42,7 +41,7 @@ const app = express();
 
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL,
+  origin: process.env.FRONTEND_URL || '*', // Fallback to allow all origins if FRONTEND_URL is not set
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
