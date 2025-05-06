@@ -1,9 +1,9 @@
-// routes/vitals.js
 const express = require('express');
-const { getVitals } = require('../controllers/vitals');
-const { authenticate } = require('../middleware/auth');
-
 const router = express.Router();
+const authenticate = require('../middleware/auth');
+const { getVitals } = require('../controllers/vitals');
+
 router.get('/', authenticate, getVitals);
 
 module.exports = router;
+

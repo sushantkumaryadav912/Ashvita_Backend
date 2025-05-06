@@ -1,263 +1,273 @@
-const supabase = require('../config/supabase');
-const jwt = require('jsonwebtoken');
+const { supabase } = require('../config/supabase');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const winston = require('winston');
 
-// JWT secret key - should be in environment variables in production
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+const JWT_SECRET = process.env.JWT_SECRET;
 
-/**
- * Register a new user (patient or doctor)
- */
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET must be defined in environment variables');
+}
+
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' }),
+  ],
+});
+
 exports.register = async (req, res) => {
   try {
-    const { email, password, name, userType, ...additionalInfo } = req.body;
-    
+    const { email, password, name, userType } = req.body;
+
     if (!email || !password || !name || !userType) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      logger.warn('Missing required fields for registration', { body: req.body });
+      return res.status(400).json({ error: 'Email, password, name, and userType are required' });
     }
-    
-    // Check if user already exists
-    const { data: existingUser, error: checkError } = await supabase
+
+    if (!['patient', 'doctor'].includes(userType)) {
+      logger.warn('Invalid userType provided', { userType });
+      return res.status(400).json({ error: 'userType must be "patient" or "doctor"' });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      logger.warn('Invalid email format', { email });
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    if (password.length < 8) {
+      logger.warn('Password too short', { email });
+      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+    }
+
+    if (typeof name !== 'string' || name.length > 100) {
+      logger.warn('Invalid name length', { name });
+      return res.status(400).json({ error: 'Name must be a string with max length of 100 characters' });
+    }
+
+    const { data: existingUser, error: fetchError } = await supabase
       .from('users')
-      .select('*')
+      .select('id')
       .eq('email', email)
       .single();
-      
-    if (existingUser) {
-      return res.status(409).json({ error: 'User already exists' });
+
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      logger.error('Supabase error checking existing user', { email, error: fetchError.message });
+      return res.status(500).json({ error: 'Error checking existing user: ' + fetchError.message });
     }
-    
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    
-    // Create user in Supabase
-    const { data: newUser, error } = await supabase
+
+    if (existingUser) {
+      logger.warn('User already exists', { email });
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const { data: user, error } = await supabase
       .from('users')
       .insert([{
         email,
         password: hashedPassword,
         name,
         user_type: userType,
-        created_at: new Date()
+        created_at: new Date().toISOString(),
       }])
       .select()
       .single();
-      
+
     if (error) {
-      console.error('Registration error:', error);
-      return res.status(500).json({ error: 'Failed to register user' });
+      logger.error('Supabase error creating user', { email, error: error.message });
+      return res.status(500).json({ error: 'Failed to register user: ' + error.message });
     }
-    
-    // Create additional profile info based on user type
-    if (userType === 'patient') {
-      const { error: patientError } = await supabase
-        .from('patients')
-        .insert([{
-          user_id: newUser.id,
-          medical_history: additionalInfo.medicalHistory || '',
-          allergies: additionalInfo.allergies || [],
-          emergency_contacts: additionalInfo.emergencyContacts || []
-        }]);
-        
-      if (patientError) {
-        console.error('Patient profile creation error:', patientError);
-      }
-    } else if (userType === 'doctor') {
-      const { error: doctorError } = await supabase
-        .from('doctors')
-        .insert([{
-          user_id: newUser.id,
-          specialty: additionalInfo.specialty || '',
-          hospital_id: additionalInfo.hospitalId || null,
-          license_number: additionalInfo.licenseNumber || ''
-        }]);
-        
-      if (doctorError) {
-        console.error('Doctor profile creation error:', doctorError);
-      }
+
+    const table = userType === 'patient' ? 'patients' : 'doctors';
+    const { error: profileError } = await supabase
+      .from(table)
+      .insert([{
+        user_id: user.id,
+        created_at: new Date().toISOString(),
+      }]);
+
+    if (profileError) {
+      logger.error('Supabase error creating user profile', { userId: user.id, error: profileError.message });
+      return res.status(500).json({ error: 'Failed to create user profile: ' + profileError.message });
     }
-    
-    // Generate JWT token
-    const token = jwt.sign(
-      { id: newUser.id, email: newUser.email, userType },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-    
+
+    const token = jwt.sign({ id: user.id, userType }, JWT_SECRET, { expiresIn: '1h' });
+
+    logger.info('User registered successfully', { userId: user.id, email });
     res.status(201).json({
       success: true,
-      token,
       user: {
-        id: newUser.id,
-        name: newUser.name,
-        email: newUser.email,
-        userType
-      }
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        userType: user.user_type,
+      },
+      token,
     });
   } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ error: 'Server error during registration' });
+    logger.error('Register error', { error: err.message });
+    res.status(500).json({ error: 'Server error during registration: ' + err.message });
   }
 };
 
-/**
- * Login user
- */
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    
+
     if (!email || !password) {
+      logger.warn('Missing required fields for login', { body: req.body });
       return res.status(400).json({ error: 'Email and password are required' });
     }
-    
-    // Find user by email
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      logger.warn('Invalid email format', { email });
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
     const { data: user, error } = await supabase
       .from('users')
       .select('*')
       .eq('email', email)
       .single();
-      
+
     if (error || !user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      logger.warn('User not found during login', { email });
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
-    
-    // Check password
+
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      logger.warn('Invalid password attempt', { email });
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
-    
-    // Generate JWT token
-    const token = jwt.sign(
-      { id: user.id, email: user.email, userType: user.user_type },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-    
+
+    const token = jwt.sign({ id: user.id, userType: user.user_type }, JWT_SECRET, { expiresIn: '1h' });
+
+    logger.info('User logged in successfully', { userId: user.id, email });
     res.status(200).json({
       success: true,
-      token,
       user: {
         id: user.id,
-        name: user.name,
         email: user.email,
-        userType: user.user_type
-      }
+        name: user.name,
+        userType: user.user_type,
+      },
+      token,
     });
   } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Server error during login' });
+    logger.error('Login error', { error: err.message });
+    res.status(500).json({ error: 'Server error during login: ' + err.message });
   }
 };
 
-/**
- * Get current user profile
- */
-exports.getCurrentUser = async (req, res) => {
+exports.getProfile = async (req, res) => {
   try {
-    // User data is attached from auth middleware
     const userId = req.user.id;
-    
-    // Get user details
+
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, name, email, user_type, created_at')
+      .select('*')
       .eq('id', userId)
       .single();
-      
+
     if (error || !user) {
+      logger.warn('User not found during profile fetch', { userId });
       return res.status(404).json({ error: 'User not found' });
     }
-    
-    // Get additional profile info based on user type
-    let profileData = {};
-    
-    if (user.user_type === 'patient') {
-      const { data: patient } = await supabase
-        .from('patients')
-        .select('*')
-        .eq('user_id', userId)
-        .single();
-        
-      if (patient) profileData = patient;
-    } else if (user.user_type === 'doctor') {
-      const { data: doctor } = await supabase
-        .from('doctors')
-        .select('*')
-        .eq('user_id', userId)
-        .single();
-        
-      if (doctor) profileData = doctor;
-    }
-    
+
+    logger.info('User profile fetched successfully', { userId });
     res.status(200).json({
       success: true,
       user: {
-        ...user,
-        profile: profileData
-      }
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        userType: user.user_type,
+        createdAt: user.created_at,
+      },
     });
   } catch (err) {
-    console.error('Get current user error:', err);
-    res.status(500).json({ error: 'Server error getting user profile' });
+    logger.error('Get profile error', { userId: req.user.id, error: err.message });
+    res.status(500).json({ error: 'Server error fetching profile: ' + err.message });
   }
 };
 
-/**
- * Update user profile
- */
 exports.updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { name, email, ...profileData } = req.body;
-    
-    // Update basic user info
-    const { error: userError } = await supabase
+    const { name, email } = req.body;
+
+    if (!name && !email) {
+      logger.warn('No fields provided for profile update', { userId });
+      return res.status(400).json({ error: 'At least one field (name or email) must be provided' });
+    }
+
+    if (name && (typeof name !== 'string' || name.length > 100)) {
+      logger.warn('Invalid name length', { name, userId });
+      return res.status(400).json({ error: 'Name must be a string with max length of 100 characters' });
+    }
+
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      logger.warn('Invalid email format', { email, userId });
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    if (email) {
+      const { data: existingUser, error: fetchError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', email)
+        .neq('id', userId)
+        .single();
+
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        logger.error('Supabase error checking email availability', { email, userId, error: fetchError.message });
+        return res.status(500).json({ error: 'Error checking email availability: ' + fetchError.message });
+      }
+
+      if (existingUser) {
+        logger.warn('Email already in use', { email, userId });
+        return res.status(400).json({ error: 'Email is already in use' });
+      }
+    }
+
+    const updates = {};
+    if (name) updates.name = name;
+    if (email) updates.email = email;
+
+    const { data: updatedUser, error } = await supabase
       .from('users')
-      .update({ name, email })
-      .eq('id', userId);
-      
-    if (userError) {
-      return res.status(500).json({ error: 'Failed to update user information' });
+      .update(updates)
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Supabase error updating profile', { userId, error: error.message });
+      return res.status(500).json({ error: 'Failed to update profile: ' + error.message });
     }
-    
-    // Update profile specific info
-    if (req.user.userType === 'patient') {
-      const { error: patientError } = await supabase
-        .from('patients')
-        .update({
-          medical_history: profileData.medicalHistory,
-          allergies: profileData.allergies,
-          emergency_contacts: profileData.emergencyContacts
-        })
-        .eq('user_id', userId);
-        
-      if (patientError) {
-        return res.status(500).json({ error: 'Failed to update patient profile' });
-      }
-    } else if (req.user.userType === 'doctor') {
-      const { error: doctorError } = await supabase
-        .from('doctors')
-        .update({
-          specialty: profileData.specialty,
-          hospital_id: profileData.hospitalId,
-          license_number: profileData.licenseNumber
-        })
-        .eq('user_id', userId);
-        
-      if (doctorError) {
-        return res.status(500).json({ error: 'Failed to update doctor profile' });
-      }
-    }
-    
+
+    logger.info('User profile updated successfully', { userId });
     res.status(200).json({
       success: true,
-      message: 'Profile updated successfully'
+      user: {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        name: updatedUser.name,
+        userType: updatedUser.user_type,
+        createdAt: updatedUser.created_at,
+      },
     });
   } catch (err) {
-    console.error('Update profile error:', err);
-    res.status(500).json({ error: 'Server error updating profile' });
+    logger.error('Update profile error', { userId: req.user.id, error: err.message });
+    res.status(500).json({ error: 'Server error updating profile: ' + err.message });
   }
 };

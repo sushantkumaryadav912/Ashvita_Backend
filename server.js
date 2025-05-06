@@ -1,5 +1,9 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const winston = require('winston');
 const authRoutes = require('./routes/auth');
 const patientRoutes = require('./routes/patient');
 const doctorRoutes = require('./routes/doctor');
@@ -9,18 +13,64 @@ const vitalsRoutes = require('./routes/vitals');
 const alertsRoutes = require('./routes/alerts');
 const healthStatusRoutes = require('./routes/health-status');
 
-const app = express();
+const requiredEnvVars = [
+  'PORT',
+  'SUPABASE_URL',
+  'SUPABASE_KEY',
+  'AZURE_IOT_HUB_CONNECTION_STRING',
+  'AZURE_ML_ANOMALY_ENDPOINT',
+  'AZURE_ML_RISK_ENDPOINT',
+  'AZURE_ML_RESOURCE_ENDPOINT',
+  'AZURE_ML_KEY',
+  'AZURE_COMMUNICATION_CONNECTION_STRING',
+  'JWT_SECRET',
+  'FRONTEND_URL',
+];
+const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+if (missingEnvVars.length > 0) {
+  throw new Error(`Missing required environment variables: ${missingEnvVars.join(', ')}`);
+}
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-// Root route
-app.get('/', (req, res) => {
-  res.send('Welcome to server');
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' }),
+  ],
 });
 
-// API routes
+const app = express();
+
+app.use(helmet());
+app.use(cors({
+  origin: process.env.FRONTEND_URL,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.use(express.json());
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: { error: 'Too many requests, please try again later.' },
+});
+app.use(limiter);
+
+app.get('/', (req, res) => {
+  logger.info('Root route accessed');
+  res.send('Welcome to Smart Health Chain server');
+});
+
+app.get('/health', (req, res) => {
+  logger.info('Health check accessed');
+  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/patient', patientRoutes);
 app.use('/api/doctor', doctorRoutes);
@@ -30,13 +80,47 @@ app.use('/api/vitals', vitalsRoutes);
 app.use('/api/alerts', alertsRoutes);
 app.use('/api/health-status', healthStatusRoutes);
 
-// Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+  logger.error('Unhandled error:', {
+    message: err.message,
+    stack: err.stack,
+    path: req.path,
+    method: req.method,
+  });
+
+  const statusCode = err.statusCode || 500;
+  const errorMessage = statusCode === 500 ? 'Internal server error' : err.message;
+
+  res.status(statusCode).json({
+    error: errorMessage,
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+  });
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const server = app.listen(PORT, () => {
+  logger.info(`Server running on port ${PORT}`);
+});
+
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received. Performing graceful shutdown...');
+  server.close(() => {
+    logger.info('Server closed.');
+    process.exit(0);
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught Exception:', {
+    message: err.message,
+    stack: err.stack,
+  });
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', {
+    promise,
+    reason: reason instanceof Error ? reason.message : reason,
+  });
 });

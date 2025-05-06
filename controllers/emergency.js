@@ -1,440 +1,401 @@
-const supabase = require('../config/supabase');
-const azureML = require('../services/azureML');
+const { supabase } = require('../config/supabase');
+const winston = require('winston');
+const { findNearestEmergencyResources } = require('../services/azureML');
 
-/**
- * Trigger an emergency from patient app
- */
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' }),
+  ],
+});
+
 exports.triggerEmergency = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { location, notes } = req.body;
-    
+    const { location, notes, currentVitals } = req.body;
+
     if (!location || !location.latitude || !location.longitude) {
-      return res.status(400).json({ error: 'Location is required' });
+      logger.warn('Missing or invalid location data', { userId, body: req.body });
+      return res.status(400).json({ error: 'Location with latitude and longitude is required' });
     }
-    
-    // Get patient details
+
+    if (typeof location.latitude !== 'number' || typeof location.longitude !== 'number') {
+      logger.warn('Invalid location coordinates', { location, userId });
+      return res.status(400).json({ error: 'Latitude and longitude must be numbers' });
+    }
+
+    if (notes && (typeof notes !== 'string' || notes.length > 500)) {
+      logger.warn('Invalid notes length', { notesLength: notes.length, userId });
+      return res.status(400).json({ error: 'Notes must be a string with max length of 500 characters' });
+    }
+
+    if (currentVitals && !Array.isArray(currentVitals)) {
+      logger.warn('Invalid currentVitals format', { currentVitals, userId });
+      return res.status(400).json({ error: 'currentVitals must be an array' });
+    }
+
+    if (currentVitals && currentVitals.some(v => !v.type || v.value === undefined || !v.unit || !v.timestamp)) {
+      logger.warn('Invalid vital data', { currentVitals, userId });
+      return res.status(400).json({ error: 'Each vital must have type, value, unit, and timestamp' });
+    }
+
     const { data: patient, error: patientError } = await supabase
       .from('patients')
-      .select(`
-        id, 
-        user_id,
-        users!inner(name, email),
-        medical_history,
-        allergies,
-        emergency_contacts
-      `)
+      .select('id')
       .eq('user_id', userId)
       .single();
-      
+
     if (patientError || !patient) {
-      console.error('Patient not found:', patientError);
+      logger.warn('Patient not found', { userId });
       return res.status(404).json({ error: 'Patient not found' });
     }
-    
-    // Get latest vitals for context
-    const { data: latestVitals } = await supabase
-      .from('vitals')
-      .select('*')
-      .eq('patient_id', patient.id)
-      .order('timestamp', { ascending: false })
-      .limit(1)
-      .single();
-      
-    // Create emergency record
+
+    const resources = await findNearestEmergencyResources(location.latitude, location.longitude);
+
     const { data: emergency, error } = await supabase
       .from('emergencies')
       .insert([{
         patient_id: patient.id,
-        location: `POINT(${location.longitude} ${location.latitude})`, // PostgreSQL point format
+        location: `POINT(${location.longitude} ${location.latitude})`,
         status: 'active',
-        notes: notes || '',
+        notes: notes || null,
         triggered_at: new Date().toISOString(),
-        triggered_by: 'patient',
-        current_vitals: latestVitals || null
+        triggered_by: userId,
+        current_vitals: currentVitals || null,
+        assigned_hospital_id: resources.hospitalId,
+        assigned_ambulance_id: resources.ambulanceId,
       }])
       .select()
       .single();
-      
+
     if (error) {
-      console.error('Error creating emergency:', error);
-      return res.status(500).json({ error: 'Failed to trigger emergency' });
+      logger.error('Supabase error triggering emergency', { userId, error: error.message });
+      return res.status(500).json({ error: 'Failed to trigger emergency: ' + error.message });
     }
-    
-    // Find nearest hospital and ambulance (using Azure ML service)
-    const nearestResources = await azureML.findNearestEmergencyResources(
-      location.latitude,
-      location.longitude
-    );
-    
-    // Update emergency with assigned resources
-    const { error: updateError } = await supabase
-      .from('emergencies')
-      .update({
-        assigned_hospital_id: nearestResources.hospitalId,
-        assigned_ambulance_id: nearestResources.ambulanceId
-      })
-      .eq('id', emergency.id);
-      
-    if (updateError) {
-      console.error('Error updating emergency with resources:', updateError);
+
+    const { error: notificationError } = await supabase
+      .from('notifications')
+      .insert([{
+        type: 'emergency',
+        recipient_type: 'doctor',
+        recipient_id: 'system', // Placeholder; in a real app, this would target specific doctors
+        recipient_email: null,
+        recipient_phone: null,
+        title: 'Emergency Alert',
+        message: `Emergency triggered for patient ${patient.id} at location (${location.latitude}, ${location.longitude})`,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        data: { emergencyId: emergency.id },
+      }]);
+
+    if (notificationError) {
+      logger.error('Supabase error creating notification', { emergencyId: emergency.id, userId, error: notificationError.message });
     }
-    
-    // Create notifications for emergency contacts
-    await notifyEmergencyContacts(patient, emergency, location);
-    
-    // Create notification for assigned ambulance
-    await notifyAmbulance(nearestResources.ambulanceId, emergency, patient, location);
-    
-    res.status(200).json({
+
+    logger.info('Emergency triggered successfully', { emergencyId: emergency.id, userId });
+    res.status(201).json({
       success: true,
       emergency: {
         id: emergency.id,
+        patientId: emergency.patient_id,
         status: emergency.status,
-        hospitalName: nearestResources.hospitalName,
-        estimatedAmbulanceArrival: nearestResources.estimatedArrivalTime
-      }
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+        },
+        hospital: {
+          id: resources.hospitalId,
+          name: resources.hospitalName,
+        },
+        ambulance: {
+          id: resources.ambulanceId,
+          estimatedArrivalTime: resources.estimatedArrivalTime,
+        },
+      },
     });
   } catch (err) {
-    console.error('Emergency trigger error:', err);
-    res.status(500).json({ error: 'Server error triggering emergency' });
+    logger.error('Trigger emergency error', { userId: req.user.id, error: err.message });
+    res.status(500).json({ error: 'Server error triggering emergency: ' + err.message });
   }
 };
 
-/**
- * Trigger emergency from QR code scan (for unconscious patients)
- */
-exports.triggerEmergencyFromQR = async (req, res) => {
+exports.triggerEmergencyByQR = async (req, res) => {
   try {
-    const { patientCode, location } = req.body;
-    
-    if (!patientCode) {
-      return res.status(400).json({ error: 'Patient code is required' });
+    const { patientId, location, notes } = req.body;
+
+    if (!patientId || !patientId.match(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)) {
+      logger.warn('Invalid patient ID', { patientId });
+      return res.status(400).json({ error: 'Valid patient ID (UUID) is required' });
     }
-    
+
     if (!location || !location.latitude || !location.longitude) {
-      return res.status(400).json({ error: 'Location is required' });
+      logger.warn('Missing or invalid location data', { body: req.body });
+      return res.status(400).json({ error: 'Location with latitude and longitude is required' });
     }
-    
-    // Decode patient code to get patient ID
-    // In production, this would be a secure token or encrypted code
-    const patientId = patientCode;
-    
-    // Get patient details
+
+    if (typeof location.latitude !== 'number' || typeof location.longitude !== 'number') {
+      logger.warn('Invalid location coordinates', { location });
+      return res.status(400).json({ error: 'Latitude and longitude must be numbers' });
+    }
+
+    if (notes && (typeof notes !== 'string' || notes.length > 500)) {
+      logger.warn('Invalid notes length', { notesLength: notes.length });
+      return res.status(400).json({ error: 'Notes must be a string with max length of 500 characters' });
+    }
+
     const { data: patient, error: patientError } = await supabase
       .from('patients')
-      .select(`
-        id, 
-        user_id,
-        users!inner(name, email),
-        medical_history,
-        allergies,
-        emergency_contacts
-      `)
+      .select('id, user_id')
       .eq('id', patientId)
       .single();
-      
+
     if (patientError || !patient) {
-      console.error('Patient not found from QR code:', patientError);
-      return res.status(404).json({ error: 'Invalid patient code' });
+      logger.warn('Patient not found', { patientId });
+      return res.status(404).json({ error: 'Patient not found' });
     }
-    
-    // Get latest vitals for context
-    const { data: latestVitals } = await supabase
-      .from('vitals')
-      .select('*')
-      .eq('patient_id', patient.id)
-      .order('timestamp', { ascending: false })
-      .limit(1)
-      .single();
-      
-    // Create emergency record
+
+    const resources = await findNearestEmergencyResources(location.latitude, location.longitude);
+
     const { data: emergency, error } = await supabase
       .from('emergencies')
       .insert([{
         patient_id: patient.id,
-        location: `POINT(${location.longitude} ${location.latitude})`, // PostgreSQL point format
+        location: `POINT(${location.longitude} ${location.latitude})`,
         status: 'active',
-        notes: 'Triggered via QR code - patient may be unconscious',
+        notes: notes || null,
         triggered_at: new Date().toISOString(),
-        triggered_by: 'qr_code',
-        current_vitals: latestVitals || null
+        triggered_by: 'QR',
+        assigned_hospital_id: resources.hospitalId,
+        assigned_ambulance_id: resources.ambulanceId,
       }])
       .select()
       .single();
-      
+
     if (error) {
-      console.error('Error creating emergency from QR:', error);
-      return res.status(500).json({ error: 'Failed to trigger emergency' });
+      logger.error('Supabase error triggering emergency by QR', { patientId, error: error.message });
+      return res.status(500).json({ error: 'Failed to trigger emergency: ' + error.message });
     }
-    
-    // Find nearest hospital and ambulance
-    const nearestResources = await azureML.findNearestEmergencyResources(
-      location.latitude,
-      location.longitude
-    );
-    
-    // Update emergency with assigned resources
-    await supabase
-      .from('emergencies')
-      .update({
-        assigned_hospital_id: nearestResources.hospitalId,
-        assigned_ambulance_id: nearestResources.ambulanceId
-      })
-      .eq('id', emergency.id);
-      
-    // Create notifications for emergency contacts
-    await notifyEmergencyContacts(patient, emergency, location);
-    
-    // Create notification for assigned ambulance
-    await notifyAmbulance(nearestResources.ambulanceId, emergency, patient, location);
-    
-    res.status(200).json({
+
+    const { error: notificationError } = await supabase
+      .from('notifications')
+      .insert([{
+        type: 'emergency',
+        recipient_type: 'doctor',
+        recipient_id: 'system',
+        recipient_email: null,
+        recipient_phone: null,
+        title: 'Emergency Alert (QR)',
+        message: `Emergency triggered via QR for patient ${patient.id} at location (${location.latitude}, ${location.longitude})`,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        data: { emergencyId: emergency.id },
+      }]);
+
+    if (notificationError) {
+      logger.error('Supabase error creating notification for QR emergency', { emergencyId: emergency.id, patientId, error: notificationError.message });
+    }
+
+    logger.info('Emergency triggered by QR successfully', { emergencyId: emergency.id, patientId });
+    res.status(201).json({
       success: true,
       emergency: {
         id: emergency.id,
+        patientId: emergency.patient_id,
         status: emergency.status,
-        patientName: patient.users.name,
-        hospitalName: nearestResources.hospitalName,
-        estimatedAmbulanceArrival: nearestResources.estimatedArrivalTime
-      }
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+        },
+        hospital: {
+          id: resources.hospitalId,
+          name: resources.hospitalName,
+        },
+        ambulance: {
+          id: resources.ambulanceId,
+          estimatedArrivalTime: resources.estimatedArrivalTime,
+        },
+      },
     });
   } catch (err) {
-    console.error('Emergency QR trigger error:', err);
-    res.status(500).json({ error: 'Server error triggering emergency from QR' });
+    logger.error('Trigger emergency by QR error', { error: err.message });
+    res.status(500).json({ error: 'Server error triggering emergency by QR: ' + err.message });
   }
 };
 
-/**
- * Get current emergency status
- */
 exports.getEmergencyStatus = async (req, res) => {
   try {
     const userId = req.user.id;
-    
-    // Get patient ID
+    const { emergencyId } = req.query;
+
+    if (emergencyId && !emergencyId.match(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)) {
+      logger.warn('Invalid emergency ID', { emergencyId, userId });
+      return res.status(400).json({ error: 'Emergency ID must be a valid UUID' });
+    }
+
     const { data: patient, error: patientError } = await supabase
       .from('patients')
       .select('id')
       .eq('user_id', userId)
       .single();
-      
+
     if (patientError || !patient) {
+      logger.warn('Patient not found', { userId });
       return res.status(404).json({ error: 'Patient not found' });
     }
-    
-    // Get active emergency for this patient
-    const { data: emergency, error } = await supabase
+
+    let query = supabase
       .from('emergencies')
       .select(`
         id,
+        patient_id,
+        location,
         status,
+        notes,
         triggered_at,
+        triggered_by,
+        current_vitals,
         assigned_hospital_id,
         assigned_ambulance_id,
-        ambulances!inner(name, current_location, estimated_arrival_time),
-        hospitals!inner(name, address)
+        cancelled_at,
+        cancellation_reason,
+        hospitals!assigned_hospital_id(name),
+        ambulances!assigned_ambulance_id(name, estimated_arrival_time)
       `)
       .eq('patient_id', patient.id)
-      .eq('status', 'active')
-      .order('triggered_at', { ascending: false })
-      .limit(1)
-      .single();
-      
+      .order('triggered_at', { ascending: false });
+
+    if (emergencyId) {
+      query = query.eq('id', emergencyId);
+    }
+
+    const { data: emergencies, error } = await query;
+
     if (error) {
-      console.error('Error fetching emergency status:', error);
-      return res.status(500).json({ error: 'Error fetching emergency status' });
+      logger.error('Supabase error fetching emergency status', { userId, error: error.message });
+      return res.status(500).json({ error: 'Failed to fetch emergency status: ' + error.message });
     }
-    
-    if (!emergency) {
-      return res.status(200).json({
-        success: true,
-        active: false,
-        message: 'No active emergency'
-      });
-    }
-    
+
+    const formattedEmergencies = (emergencies || []).map(emergency => ({
+      id: emergency.id,
+      patientId: emergency.patient_id,
+      location: {
+        latitude: emergency.location.coordinates[1],
+        longitude: emergency.location.coordinates[0],
+      },
+      status: emergency.status,
+      notes: emergency.notes,
+      triggeredAt: emergency.triggered_at,
+      triggeredBy: emergency.triggered_by,
+      currentVitals: emergency.current_vitals,
+      hospital: emergency.hospitals ? {
+        id: emergency.assigned_hospital_id,
+        name: emergency.hospitals.name,
+      } : null,
+      ambulance: emergency.ambulances ? {
+        id: emergency.assigned_ambulance_id,
+        name: emergency.ambulances.name,
+        estimatedArrivalTime: emergency.ambulances.estimated_arrival_time,
+      } : null,
+      cancelledAt: emergency.cancelled_at,
+      cancellationReason: emergency.cancellation_reason,
+    }));
+
+    logger.info('Emergency status fetched successfully', { userId, count: formattedEmergencies.length });
     res.status(200).json({
       success: true,
-      active: true,
-      emergency: {
-        id: emergency.id,
-        status: emergency.status,
-        triggeredAt: emergency.triggered_at,
-        hospital: {
-          id: emergency.assigned_hospital_id,
-          name: emergency.hospitals.name,
-          address: emergency.hospitals.address
-        },
-        ambulance: {
-          id: emergency.assigned_ambulance_id,
-          name: emergency.ambulances.name,
-          currentLocation: emergency.ambulances.current_location,
-          estimatedArrival: emergency.ambulances.estimated_arrival_time
-        }
-      }
+      emergencies: formattedEmergencies,
     });
   } catch (err) {
-    console.error('Get emergency status error:', err);
-    res.status(500).json({ error: 'Server error getting emergency status' });
+    logger.error('Get emergency status error', { userId: req.user.id, error: err.message });
+    res.status(500).json({ error: 'Server error fetching emergency status: ' + err.message });
   }
 };
 
-/**
- * Cancel an active emergency
- */
 exports.cancelEmergency = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { emergencyId, reason } = req.body;
-    
-    if (!emergencyId) {
-      return res.status(400).json({ error: 'Emergency ID is required' });
+    const { emergencyId, cancellationReason } = req.body;
+
+    if (!emergencyId || !emergencyId.match(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)) {
+      logger.warn('Invalid emergency ID', { emergencyId, userId });
+      return res.status(400).json({ error: 'Valid emergency ID (UUID) is required' });
     }
-    
-    // Get patient ID
+
+    if (!cancellationReason || typeof cancellationReason !== 'string' || cancellationReason.length > 500) {
+      logger.warn('Invalid cancellation reason', { cancellationReason, userId });
+      return res.status(400).json({ error: 'Cancellation reason must be a string with max length of 500 characters' });
+    }
+
     const { data: patient, error: patientError } = await supabase
       .from('patients')
       .select('id')
       .eq('user_id', userId)
       .single();
-      
+
     if (patientError || !patient) {
+      logger.warn('Patient not found', { userId });
       return res.status(404).json({ error: 'Patient not found' });
     }
-    
-    // Verify emergency belongs to this patient and is active
+
     const { data: emergency, error: emergencyError } = await supabase
       .from('emergencies')
-      .select('id, assigned_ambulance_id')
+      .select('id, status')
       .eq('id', emergencyId)
       .eq('patient_id', patient.id)
       .eq('status', 'active')
       .single();
-      
+
     if (emergencyError || !emergency) {
-      return res.status(404).json({ error: 'Active emergency not found' });
+      logger.warn('Active emergency not found or not authorized', { emergencyId, userId });
+      return res.status(404).json({ error: 'Active emergency not found or not authorized' });
     }
-    
-    // Update emergency status to cancelled
+
     const { error } = await supabase
       .from('emergencies')
       .update({
         status: 'cancelled',
         cancelled_at: new Date().toISOString(),
-        cancellation_reason: reason || 'Cancelled by patient'
+        cancellation_reason: cancellationReason,
       })
       .eq('id', emergencyId);
-      
-    if (error) {
-      console.error('Error cancelling emergency:', error);
-      return res.status(500).json({ error: 'Failed to cancel emergency' });
-    }
-    
-    // Notify ambulance of cancellation
-    if (emergency.assigned_ambulance_id) {
-      // TODO: Implement notification to ambulance service
-    }
-    
-    res.status(200).json({
-      success: true,
-      message: 'Emergency cancelled successfully'
-    });
-  } catch (err) {
-    console.error('Cancel emergency error:', err);
-    res.status(500).json({ error: 'Server error cancelling emergency' });
-  }
-};
 
-/**
- * Helper function to notify emergency contacts
- */
-async function notifyEmergencyContacts(patient, emergency, location) {
-  try {
-    if (!patient.emergency_contacts || patient.emergency_contacts.length === 0) {
-      console.log('No emergency contacts to notify');
-      return;
-    }
-    
-    // Create notifications for each contact
-    const notifications = patient.emergency_contacts.map(contact => ({
-      type: 'emergency',
-      recipient_type: 'emergency_contact',
-      recipient_id: contact.id,
-      recipient_email: contact.email,
-      recipient_phone: contact.phone,
-      title: 'Emergency Alert',
-      message: `${patient.users.name} has triggered an emergency alert.`,
-      status: 'pending',
-      created_at: new Date().toISOString(),
-      data: {
-        patientId: patient.id,
-        patientName: patient.users.name,
-        emergencyId: emergency.id,
-        location: {
-          latitude: location.latitude,
-          longitude: location.longitude
-        }
-      }
-    }));
-    
-    // Insert notifications to database
-    const { error } = await supabase
-      .from('notifications')
-      .insert(notifications);
-      
     if (error) {
-      console.error('Error creating emergency contact notifications:', error);
+      logger.error('Supabase error canceling emergency', { emergencyId, userId, error: error.message });
+      return res.status(500).json({ error: 'Failed to cancel emergency: ' + error.message });
     }
-    
-    // TODO: Send SMS and push notifications to contacts
-    
-  } catch (err) {
-    console.error('Error in notifyEmergencyContacts:', err);
-  }
-}
 
-/**
- * Helper function to notify ambulance service
- */
-async function notifyAmbulance(ambulanceId, emergency, patient, location) {
-  try {
-    if (!ambulanceId) {
-      console.log('No ambulance assigned to notify');
-      return;
-    }
-    
-    // Create notification for ambulance service
-    const { error } = await supabase
+    const { error: notificationError } = await supabase
       .from('notifications')
       .insert([{
-        type: 'emergency_dispatch',
-        recipient_type: 'ambulance',
-        recipient_id: ambulanceId,
-        title: 'Emergency Dispatch',
-        message: `New emergency dispatch for patient ${patient.users.name}`,
+        type: 'emergency_cancel',
+        recipient_type: 'doctor',
+        recipient_id: 'system',
+        recipient_email: null,
+        recipient_phone: null,
+        title: 'Emergency Cancelled',
+        message: `Emergency ${emergencyId} for patient ${patient.id} has been cancelled: ${cancellationReason}`,
         status: 'pending',
         created_at: new Date().toISOString(),
-        data: {
-          patientId: patient.id,
-          patientName: patient.users.name,
-          emergencyId: emergency.id,
-          medicalHistory: patient.medical_history,
-          allergies: patient.allergies,
-          location: {
-            latitude: location.latitude,
-            longitude: location.longitude
-          }
-        }
+        data: { emergencyId },
       }]);
-      
-    if (error) {
-      console.error('Error creating ambulance notification:', error);
+
+    if (notificationError) {
+      logger.error('Supabase error creating cancellation notification', { emergencyId, userId, error: notificationError.message });
     }
-    
-    // TODO: Integration with ambulance dispatch system
-    
+
+    logger.info('Emergency cancelled successfully', { emergencyId, userId });
+    res.status(200).json({
+      success: true,
+      message: 'Emergency cancelled successfully',
+    });
   } catch (err) {
-    console.error('Error in notifyAmbulance:', err);
+    logger.error('Cancel emergency error', { userId: req.user.id, error: err.message });
+    res.status(500).json({ error: 'Server error canceling emergency: ' + err.message });
   }
-}
+};

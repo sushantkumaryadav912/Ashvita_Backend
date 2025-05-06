@@ -22,3 +22,4 @@ const getIoTData = async (userId) => {
 };
 
 module.exports = { getIoTData };
+
