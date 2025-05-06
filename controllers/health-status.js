@@ -1,6 +1,5 @@
 const { supabase } = require('../config/supabase');
 const winston = require('winston');
-const { predictHealthStatus } = require('../services/azureML');
 
 const logger = winston.createLogger({
   level: 'info',
@@ -79,22 +78,16 @@ exports.getHealthStatus = async (req, res) => {
         description: record.description,
         date: record.date,
       })),
+      lastEvaluated: new Date().toISOString(),
     };
 
-    const healthStatus = await predictHealthStatus(healthData);
-
-    logger.info('Health status evaluated successfully', { patientId: patient.id, userId });
+    logger.info('Health data fetched successfully', { patientId: patient.id, userId });
     res.status(200).json({
       success: true,
-      healthStatus: {
-        status: healthStatus.status,
-        riskLevel: healthStatus.riskLevel,
-        recommendations: healthStatus.recommendations,
-        lastEvaluated: new Date().toISOString(),
-      },
+      healthData,
     });
   } catch (err) {
-    logger.error('Get health status error', { userId: req.user.id, error: err.message });
-    res.status(500).json({ error: 'Server error evaluating health status: ' + err.message });
+    logger.error('Get health data error', { userId: req.user.id, error: err.message });
+    res.status(500).json({ error: 'Server error fetching health data: ' + err.message });
   }
 };

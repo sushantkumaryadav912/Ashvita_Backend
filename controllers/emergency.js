@@ -1,6 +1,5 @@
 const { supabase } = require('../config/supabase');
 const winston = require('winston');
-const { findNearestEmergencyResources } = require('../services/azureML');
 
 const logger = winston.createLogger({
   level: 'info',
@@ -56,8 +55,6 @@ exports.triggerEmergency = async (req, res) => {
       return res.status(404).json({ error: 'Patient not found' });
     }
 
-    const resources = await findNearestEmergencyResources(location.latitude, location.longitude);
-
     const { data: emergency, error } = await supabase
       .from('emergencies')
       .insert([{
@@ -68,8 +65,7 @@ exports.triggerEmergency = async (req, res) => {
         triggered_at: new Date().toISOString(),
         triggered_by: userId,
         current_vitals: currentVitals || null,
-        assigned_hospital_id: resources.hospitalId,
-        assigned_ambulance_id: resources.ambulanceId,
+        // Removed assigned_hospital_id and assigned_ambulance_id
       }])
       .select()
       .single();
@@ -84,7 +80,7 @@ exports.triggerEmergency = async (req, res) => {
       .insert([{
         type: 'emergency',
         recipient_type: 'doctor',
-        recipient_id: 'system', // Placeholder; in a real app, this would target specific doctors
+        recipient_id: 'system',
         recipient_email: null,
         recipient_phone: null,
         title: 'Emergency Alert',
@@ -109,14 +105,8 @@ exports.triggerEmergency = async (req, res) => {
           latitude: location.latitude,
           longitude: location.longitude,
         },
-        hospital: {
-          id: resources.hospitalId,
-          name: resources.hospitalName,
-        },
-        ambulance: {
-          id: resources.ambulanceId,
-          estimatedArrivalTime: resources.estimatedArrivalTime,
-        },
+        hospital: null, // No hospital assigned
+        ambulance: null, // No ambulance assigned
       },
     });
   } catch (err) {
@@ -160,8 +150,6 @@ exports.triggerEmergencyByQR = async (req, res) => {
       return res.status(404).json({ error: 'Patient not found' });
     }
 
-    const resources = await findNearestEmergencyResources(location.latitude, location.longitude);
-
     const { data: emergency, error } = await supabase
       .from('emergencies')
       .insert([{
@@ -171,8 +159,7 @@ exports.triggerEmergencyByQR = async (req, res) => {
         notes: notes || null,
         triggered_at: new Date().toISOString(),
         triggered_by: 'QR',
-        assigned_hospital_id: resources.hospitalId,
-        assigned_ambulance_id: resources.ambulanceId,
+        // Removed assigned_hospital_id and assigned_ambulance_id
       }])
       .select()
       .single();
@@ -212,14 +199,8 @@ exports.triggerEmergencyByQR = async (req, res) => {
           latitude: location.latitude,
           longitude: location.longitude,
         },
-        hospital: {
-          id: resources.hospitalId,
-          name: resources.hospitalName,
-        },
-        ambulance: {
-          id: resources.ambulanceId,
-          estimatedArrivalTime: resources.estimatedArrivalTime,
-        },
+        hospital: null, // No hospital assigned
+        ambulance: null, // No ambulance assigned
       },
     });
   } catch (err) {
