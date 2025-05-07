@@ -17,48 +17,70 @@ const logger = winston.createLogger({
 exports.getProfile = async (req, res) => {
   try {
     const userId = req.user.id;
+    const userType = req.user.userType;
 
-    const { data: patient, error } = await supabase
-      .from('patients')
-      .select(`
-        id,
-        user_id,
-        medical_history,
-        allergies,
-        emergency_contacts,
-        created_at,
-        users!inner(name, email, user_type)
-      `)
-      .eq('user_id', userId)
+    // Fetch user metadata from auth.users
+    const { data: user, error: userError } = await supabase
+      .from('auth.users')
+      .select('email, user_metadata')
+      .eq('id', userId)
       .single();
 
-    if (error || !patient) {
-      logger.warn('Patient not found', { userId });
-      return res.status(404).json({ error: 'Patient not found' });
+    if (userError || !user) {
+      logger.warn('User not found in auth.users', { userId });
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    logger.info('Patient profile fetched successfully', { userId });
-    res.status(200).json({
+    // Fetch profile from the appropriate table
+    const table = userType === 'patient' ? 'patients' : userType === 'doctor' ? 'doctors' : 'admins';
+    const { data: profile, error } = await supabase
+      .from(table)
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (error || !profile) {
+      logger.warn('Profile not found', { userId, userType });
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    logger.info('Profile fetched successfully', { userId, userType });
+
+    const response = {
       success: true,
-      id: patient.id,
-      userId: patient.user_id,
-      name: patient.users.name,
-      email: patient.users.email,
-      userType: patient.users.user_type,
-      phone: patient.users.phone || '123-456-7890',
-      dob: patient.users.dob || '1990-01-01',
-      gender: patient.users.gender || 'Not Specified',
-      address: patient.users.address || '123 Health St, City, Country',
-      bloodType: patient.blood_type || 'O+',
-      height: patient.height || '170 cm',
-      weight: patient.weight || '70 kg',
-      allergies: patient.allergies || [],
-      medicalHistory: patient.medical_history || [],
-      createdAt: patient.created_at,
-    });
+      id: profile.id,
+      userId: userId,
+      name: profile.name || user.user_metadata.name || 'Unknown',
+      email: profile.email || user.email,
+      userType: profile.userType,
+      phone: profile.phone || 'Not Provided',
+      dob: profile.dob || 'Not Provided',
+      gender: profile.gender || 'Not Provided',
+      address: profile.address || 'Not Provided',
+      bloodType: profile.bloodType || 'Not Provided',
+      height: profile.height || 'Not Provided',
+      weight: profile.weight || 'Not Provided',
+      allergies: profile.allergies || [],
+      avatar: profile.avatar || null,
+      medicalHistory: profile.medical_history || [],
+      emergencyContacts: profile.emergency_contacts || [],
+      createdAt: profile.created_at || new Date().toISOString(),
+    };
+
+    if (userType === 'doctor') {
+      response.specialization = profile.specialization || 'Not Provided';
+      response.licenseNumber = profile.licenseNumber || 'Not Provided';
+      response.hospitalAffiliation = profile.hospitalAffiliation || 'Not Provided';
+      response.yearsOfExperience = profile.yearsOfExperience || 'Not Provided';
+    } else if (userType === 'admin') {
+      response.role = profile.role || 'Not Provided';
+      response.permissions = profile.permissions || [];
+    }
+
+    res.status(200).json(response);
   } catch (err) {
-    logger.error('Get patient profile error', { userId: req.user.id, error: err.message });
-    res.status(500).json({ error: 'Server error fetching patient profile: ' + err.message });
+    logger.error('Get profile error', { userId: req.user.id, error: err.message });
+    res.status(500).json({ error: 'Server error fetching profile: ' + err.message });
   }
 };
 
@@ -70,24 +92,24 @@ exports.getEmergencyContacts = async (req, res) => {
     if (userType === 'admin') {
       const { data: patients, error } = await supabase
         .from('patients')
-        .select('emergency_contacts, user_id, users!inner(name)')
-        .order('user_id');
+        .select('id, emergency_contacts, name')
+        .order('id');
 
       if (error) {
         logger.error('Supabase error fetching emergency contacts for admin', { userId, error: error.message });
         return res.status(500).json({ error: 'Failed to fetch emergency contacts: ' + error.message });
       }
 
-      const allContacts = patients.flatMap(patient => 
+      const allContacts = patients.flatMap(patient =>
         (patient.emergency_contacts || []).map((contact, index) => ({
-          id: `contact-${patient.user_id}-${index}`,
+          id: `contact-${patient.id}-${index}`,
           name: contact.name || 'Unknown Contact',
           relationship: contact.relationship || 'Not Specified',
           phone: contact.phone || 'Not Provided',
           email: contact.email || 'Not Provided',
           image: contact.image || null,
           isPrimary: contact.isPrimary || false,
-          patientName: patient.users.name,
+          patientName: patient.name,
         }))
       );
 
@@ -103,7 +125,7 @@ exports.getEmergencyContacts = async (req, res) => {
     const { data: patient, error } = await supabase
       .from('patients')
       .select('emergency_contacts')
-      .eq('user_id', userId)
+      .eq('id', userId)
       .single();
 
     if (error || !patient) {
@@ -144,9 +166,9 @@ exports.getMedicalRecords = async (req, res) => {
           description,
           date,
           patient_id,
-          patients!inner(user_id, users!inner(name)),
           doctor_id,
-          doctors!inner(user_id, users!inner(name))
+          patients!inner(name),
+          doctors!inner(name)
         `)
         .order('date', { ascending: false });
 
@@ -167,14 +189,14 @@ exports.getMedicalRecords = async (req, res) => {
 
       const formattedRecords = (records || []).map(record => ({
         id: record.id,
-        title: record.title || `${record.record_type} - ${record.date.split('T')[0]}`,
+        title: record.record_type ? `${record.record_type} - ${record.date.split('T')[0]}` : 'Record',
         date: record.date,
-        patientName: record.patients.users.name,
-        provider: record.doctors ? record.doctors.users.name : 'Unknown Provider',
+        patientName: record.patients.name,
+        provider: record.doctors ? record.doctors.name : 'Unknown Provider',
         type: record.record_type || 'Other',
         description: record.description || 'No description provided',
         fileType: record.file_type || 'pdf',
-        fileSize: record.file_size || '1.2 MB',
+        fileSize: record.file_size || 'Unknown',
       }));
 
       logger.info('Medical records fetched for admin', { userId, count: formattedRecords.length });
@@ -199,7 +221,7 @@ exports.getMedicalRecords = async (req, res) => {
     const { data: patient, error: patientError } = await supabase
       .from('patients')
       .select('id')
-      .eq('user_id', userId)
+      .eq('id', userId)
       .single();
 
     if (patientError || !patient) {
@@ -215,7 +237,7 @@ exports.getMedicalRecords = async (req, res) => {
         description,
         date,
         doctor_id,
-        doctors!inner(user_id, users!inner(name, email))
+        doctors!inner(name)
       `)
       .eq('patient_id', patient.id)
       .order('date', { ascending: false });
@@ -237,13 +259,13 @@ exports.getMedicalRecords = async (req, res) => {
 
     const formattedRecords = (records || []).map(record => ({
       id: record.id,
-      title: record.title || `${record.record_type} - ${record.date.split('T')[0]}`,
+      title: record.record_type ? `${record.record_type} - ${record.date.split('T')[0]}` : 'Record',
       date: record.date,
-      provider: record.doctors ? record.doctors.users.name : 'Unknown Provider',
+      provider: record.doctors ? record.doctors.name : 'Unknown Provider',
       type: record.record_type || 'Other',
       description: record.description || 'No description provided',
       fileType: record.file_type || 'pdf',
-      fileSize: record.file_size || '1.2 MB',
+      fileSize: record.file_size || 'Unknown',
     }));
 
     logger.info('Medical records fetched successfully', { userId, count: formattedRecords.length });

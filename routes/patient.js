@@ -3,10 +3,13 @@ const router = express.Router();
 const authenticateToken = require('../middleware/auth');
 const patientController = require('../controllers/patient');
 
-// GET /api/patient/profile - Get the authenticated patient's profile
+// GET /api/patient/profile - Fetch user profile (patient, doctor, or admin)
 router.get('/profile', authenticateToken, patientController.getProfile);
 
-// GET /api/patient/medical-records - Get the authenticated patient's medical records
+// GET /api/patient/emergency-contacts - Fetch emergency contacts (patient or admin)
+router.get('/emergency-contacts', authenticateToken, patientController.getEmergencyContacts);
+
+// GET /api/patient/medical-records - Fetch medical records (patient or admin)
 router.get('/medical-records', authenticateToken, patientController.getMedicalRecords);
 
 module.exports = router;

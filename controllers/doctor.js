@@ -27,7 +27,7 @@ exports.getNotes = async (req, res) => {
     const { data: doctor, error: doctorError } = await supabase
       .from('doctors')
       .select('id')
-      .eq('user_id', doctorId)
+      .eq('id', doctorId)
       .single();
 
     if (doctorError || !doctor) {
@@ -42,7 +42,7 @@ exports.getNotes = async (req, res) => {
         note,
         created_at,
         patient_id,
-        patients!inner(user_id, users!inner(name, email))
+        patients!inner(name, email)
       `)
       .eq('doctor_id', doctor.id)
       .order('created_at', { ascending: false });
@@ -64,9 +64,8 @@ exports.getNotes = async (req, res) => {
       createdAt: note.created_at,
       patient: {
         id: note.patient_id,
-        userId: note.patients.user_id,
-        name: note.patients.users.name,
-        email: note.patients.users.email,
+        name: note.patients.name,
+        email: note.patients.email,
       },
     }));
 
@@ -104,7 +103,7 @@ exports.createNote = async (req, res) => {
     const { data: doctor, error: doctorError } = await supabase
       .from('doctors')
       .select('id')
-      .eq('user_id', doctorId)
+      .eq('id', doctorId)
       .single();
 
     if (doctorError || !doctor) {

@@ -14,21 +14,11 @@ const logger = winston.createLogger({
   ],
 });
 
-// Middleware to ensure the user is an admin
-const ensureAdmin = (req, res, next) => {
-  if (req.user.userType !== 'admin') {
-    logger.warn('Unauthorized access attempt by non-admin', { userId: req.user.id, userType: req.user.userType });
-    return res.status(403).json({ error: 'Access denied: Admin privileges required' });
-  }
-  next();
-};
-
-// GET /api/admin/users - Fetch all users (patients, doctors, admins)
 exports.getAllUsers = async (req, res) => {
   try {
     const { data: users, error } = await supabase
-      .from('users')
-      .select('id, name, email, user_type, created_at')
+      .from('auth.users')
+      .select('id, email, user_metadata')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -36,28 +26,27 @@ exports.getAllUsers = async (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch users: ' + error.message });
     }
 
-    logger.info('Users fetched successfully by admin', { userId: req.user.id, count: users.length });
-    res.status(200).json(users);
+    const formattedUsers = users.map(user => ({
+      id: user.id,
+      name: user.user_metadata.name || 'Unknown',
+      email: user.email,
+      userType: user.user_metadata.userType || 'unknown',
+      createdAt: user.created_at || new Date().toISOString(),
+    }));
+
+    logger.info('Users fetched successfully by admin', { userId: req.user.id, count: formattedUsers.length });
+    res.status(200).json(formattedUsers);
   } catch (err) {
     logger.error('Get users error', { userId: req.user.id, error: err.message });
     res.status(500).json({ error: 'Server error fetching users: ' + err.message });
   }
 };
 
-// GET /api/admin/patients - Fetch all patients with their profiles
 exports.getAllPatients = async (req, res) => {
   try {
     const { data: patients, error } = await supabase
       .from('patients')
-      .select(`
-        id,
-        user_id,
-        medical_history,
-        allergies,
-        emergency_contacts,
-        created_at,
-        users!inner(name, email, user_type)
-      `)
+      .select('id, name, email, userType, medical_history, allergies, emergency_contacts, created_at')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -67,10 +56,9 @@ exports.getAllPatients = async (req, res) => {
 
     const formattedPatients = patients.map(patient => ({
       id: patient.id,
-      userId: patient.user_id,
-      name: patient.users.name,
-      email: patient.users.email,
-      userType: patient.users.user_type,
+      name: patient.name,
+      email: patient.email,
+      userType: patient.userType,
       medicalHistory: patient.medical_history || [],
       allergies: patient.allergies || [],
       emergencyContacts: patient.emergency_contacts || [],
@@ -85,21 +73,11 @@ exports.getAllPatients = async (req, res) => {
   }
 };
 
-// GET /api/admin/doctors - Fetch all doctors with their profiles
 exports.getAllDoctors = async (req, res) => {
   try {
     const { data: doctors, error } = await supabase
       .from('doctors')
-      .select(`
-        id,
-        user_id,
-        specialization,
-        license_number,
-        hospital_affiliation,
-        years_of_experience,
-        created_at,
-        users!inner(name, email, user_type)
-      `)
+      .select('id, name, email, userType, specialization, licenseNumber, hospitalAffiliation, yearsOfExperience, created_at')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -109,14 +87,13 @@ exports.getAllDoctors = async (req, res) => {
 
     const formattedDoctors = doctors.map(doctor => ({
       id: doctor.id,
-      userId: doctor.user_id,
-      name: doctor.users.name,
-      email: doctor.users.email,
-      userType: doctor.users.user_type,
-      specialization: doctor.specialization || 'General Practitioner',
-      licenseNumber: doctor.license_number || 'DOC123456',
-      hospitalAffiliation: doctor.hospital_affiliation || 'City Hospital',
-      yearsOfExperience: doctor.years_of_experience || '10 years',
+      name: doctor.name,
+      email: doctor.email,
+      userType: doctor.userType,
+      specialization: doctor.specialization || 'Not Provided',
+      licenseNumber: doctor.licenseNumber || 'Not Provided',
+      hospitalAffiliation: doctor.hospitalAffiliation || 'Not Provided',
+      yearsOfExperience: doctor.yearsOfExperience || 'Not Provided',
       createdAt: doctor.created_at,
     }));
 
